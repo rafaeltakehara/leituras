@@ -49,7 +49,6 @@
   function int(v) { var n = parseInt(v, 10); return isNaN(n) ? null : n; }
 
   var CHEV_L = '<svg viewBox="0 0 12 20" aria-hidden="true"><path d="M10 2 2 10l8 8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-  var CHEV_R = '<svg class="chev" viewBox="0 0 8 14" aria-hidden="true"><path d="m1 1 6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   var PLUS = '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
 
   // ---------- servidor ----------
@@ -89,7 +88,7 @@
     return {
       id: raw.id, titulo: raw.titulo, autor: raw.autor || '', ano: raw.ano,
       total: raw.total, startPage: raw.pagina_inicial, startDate: String(raw.data_inicio).slice(0, 10),
-      goalMin: raw.meta_min, goalMax: raw.meta_max, arquivado: !!raw.arquivado, logs: logs
+      goalMin: raw.meta_min, goalMax: raw.meta_max, arquivado: !!raw.arquivado, capa: raw.capa || null, logs: logs
     };
   }
 
@@ -234,17 +233,52 @@
     });
   }
 
+  // ---------- capas ----------
+  function coverHtml(b, cls) {
+    if (b.capa) return '<img class="' + cls + '" src="' + esc(b.capa) + '" alt="Capa de ' + esc(b.titulo) + '">';
+    return '<div class="' + cls + ' cover-ph" aria-hidden="true">' + esc(String(b.titulo || '?').trim().charAt(0).toUpperCase()) + '</div>';
+  }
+
+  // Reduz a foto escolhida no aparelho para um JPEG leve (cabe no banco).
+  function readCover(file) {
+    return new Promise(function (resolve, reject) {
+      if (!file || !/^image\//.test(file.type || 'image/')) return reject(new Error('Escolha um arquivo de imagem.'));
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        URL.revokeObjectURL(url);
+        var scale = Math.min(1, 720 / img.naturalHeight, 480 / img.naturalWidth);
+        var w = Math.max(1, Math.round(img.naturalWidth * scale)), h = Math.max(1, Math.round(img.naturalHeight * scale));
+        var cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        var ctx = cv.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        var q = 0.85, data = cv.toDataURL('image/jpeg', q);
+        while (data.length > 380000 && q > 0.4) { q -= 0.1; data = cv.toDataURL('image/jpeg', q); }
+        if (data.length > 380000) return reject(new Error('A imagem ficou grande demais. Tente outra.'));
+        resolve(data);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('Não consegui abrir essa imagem.')); };
+      img.src = url;
+    });
+  }
+
+  function coverPicker(id, label) {
+    return '<label class="chip file">' + label + '<input type="file" id="' + id + '" accept="image/*" class="vh"></label>';
+  }
+
   // ---------- estante ----------
   function bookCard(b, t) {
     var c = calc(b, t);
     var meta = 'p. ' + nf.format(c.cur) + ' de ' + nf.format(b.total);
     if (!b.arquivado && c.rem > 0 && c.tp > 0) meta += ' · hoje +' + c.tp;
     return '<a class="book" href="#/livro/' + b.id + '">' +
-      '<div class="mini">' + ringSvg(c.pct, 28) + '<span>' + pctTxt(c.pct) + '</span></div>' +
+      coverHtml(b, 'thumb') +
       '<div class="book-info"><div class="book-t">' + esc(b.titulo) + '</div>' +
       (b.autor ? '<div class="book-a">' + esc(b.autor) + (b.ano ? ' · ' + b.ano : '') + '</div>' : '') +
       '<div class="book-m"><span class="pill ' + c.status.cls + '">' + esc(c.status.short) + '</span><span>' + meta + '</span></div></div>' +
-      CHEV_R + '</a>';
+      '<div class="mini">' + ringSvg(c.pct, 28) + '<span>' + pctTxt(c.pct) + '</span></div></a>';
   }
 
   function renderShelf() {
@@ -294,6 +328,8 @@
       '<header class="bar"><a class="back" href="#/">' + CHEV_L + 'Estante</a></header>' +
       '<section class="hero"><h1>Novo livro</h1><p class="lede">Informe o tamanho do livro e quantas páginas você quer ler por dia.</p></section>' +
       '<form class="form card" id="newForm" novalidate>' +
+      '  <div class="field full cover-field"><span>Capa (opcional)</span><div class="cover-row"><div id="nPrev">' + coverHtml({ titulo: '+' }, 'thumb') + '</div>' +
+      '    <div class="chips">' + coverPicker('nCapa', 'Escolher imagem') + '</div></div></div>' +
       '  <label class="field full"><span>Título</span><input id="nTitulo" autocomplete="off" required></label>' +
       '  <label class="field"><span>Autor</span><input id="nAutor" autocomplete="off"></label>' +
       '  <label class="field"><span>Ano (opcional)</span><input id="nAno" type="number" inputmode="numeric"></label>' +
@@ -306,6 +342,13 @@
       '  <div class="msg" id="newMsg" role="status"></div>' +
       '</form>';
     $('#nTitulo').focus();
+    var newCover = null;
+    $('#nCapa').addEventListener('change', async function (e) {
+      try {
+        newCover = await readCover(e.target.files[0]);
+        $('#nPrev').innerHTML = coverHtml({ titulo: '', capa: newCover }, 'thumb');
+      } catch (err) { var o = $('#newMsg'); o.className = 'msg err'; o.textContent = err.message; }
+    });
     $('#newForm').addEventListener('submit', async function (e) {
       e.preventDefault();
       var out = $('#newMsg');
@@ -326,6 +369,7 @@
         var id = await rpc('leitura_salvar_livro', { p_token: token, p_livro: {
           titulo: titulo, autor: $('#nAutor').value.trim(), ano: ano, total: total,
           pagina_inicial: ini, data_inicio: data, meta_min: mn, meta_max: mx } });
+        if (newCover) { try { await rpc('leitura_salvar_capa', { p_token: token, p_id: id, p_capa: newCover }); } catch (e2) {} }
         await refresh();
         location.hash = '#/livro/' + id;
       } catch (err) { btn.disabled = false; fail(errMsg(err)); }
@@ -362,7 +406,7 @@
 
     app.innerHTML =
       '<header class="bar"><a class="back" href="#/">' + CHEV_L + 'Estante</a><span>' + DOWL[td.getDay()] + ', ' + td.getDate() + ' de ' + MONL[td.getMonth()] + '</span></header>' +
-      '<section class="hero">' + (byline ? '<p class="byline">' + esc(byline) + '</p>' : '') +
+      '<section class="hero">' + coverHtml(b, 'cover') + (byline ? '<p class="byline">' + esc(byline) + '</p>' : '') +
       '<h1>' + esc(b.titulo) + '</h1><p class="lede">' + lede + '</p>' +
       '<span class="pill ' + c.status.cls + '">' + esc(c.status.long) + '</span></section>' +
       noticeHtml() +
@@ -406,6 +450,8 @@
       '    <button class="btn" type="submit">Salvar ajustes</button>' +
       '    <div class="msg" id="setMsg" role="status" aria-live="polite"></div>' +
       '  </form>' +
+      '  <div class="cover-edit"><span class="label">Capa</span><div class="chips">' + coverPicker('sCapa', b.capa ? 'Trocar capa' : 'Escolher capa') +
+      (b.capa ? '<button type="button" class="chip" id="rmCapa">Remover capa</button>' : '') + '</div><div class="msg" id="capaMsg" role="status"></div></div>' +
       '  <div class="danger-zone">' +
       '    <button type="button" class="btn ghost" id="archive">' + (b.arquivado ? 'Voltar para a estante' : 'Arquivar livro') + '</button>' +
       '    <button type="button" class="btn danger" id="delete">Excluir livro</button>' +
@@ -426,6 +472,22 @@
       chartObserver = new ResizeObserver(function () { drawChart(chart, b, c); });
       chartObserver.observe(chart);
     }
+
+    async function saveCover(data) {
+      var out = $('#capaMsg');
+      out.className = 'msg'; out.textContent = 'Salvando…';
+      try {
+        await rpc('leitura_salvar_capa', { p_token: token, p_id: b.id, p_capa: data });
+        b.capa = data;
+        route();
+        var m = $('#capaMsg'); if (m) m.textContent = data ? 'Capa salva.' : 'Capa removida.';
+      } catch (err) { out.className = 'msg err'; out.textContent = errMsg(err); }
+    }
+    $('#sCapa').addEventListener('change', async function (e) {
+      try { await saveCover(await readCover(e.target.files[0])); }
+      catch (err) { var o = $('#capaMsg'); o.className = 'msg err'; o.textContent = err.message; }
+    });
+    if ($('#rmCapa')) $('#rmCapa').addEventListener('click', function () { saveCover(null); });
 
     $('#settings').addEventListener('toggle', function (e) { settingsOpen = e.target.open; });
     $('#logDate').addEventListener('change', function () { updateChips(b, c); });
